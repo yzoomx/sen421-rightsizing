@@ -1,0 +1,22 @@
+\begin{table}[htbp]
+\caption{Performance of the Configurations (mean $\pm$ standard deviation of 3 runs)}
+\label{tab:perf}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{Max req/s} & \textbf{p95 at max (ms)} & \textbf{req/s at SLO}$^*$ & \textbf{CPU / steal (\%)} \\
+\hline
+1x CPX22 & 1137 $\pm$ 8 & 84.9 $\pm$ 4.9 & 1061 $\pm$ 59 & 100 / 0.0 \\
+\hline
+1x CPX32 & 1875 $\pm$ 17 & 58.2 $\pm$ 0.7 & 1884 $\pm$ 5$^\dagger$ & 100 / 0.0 \\
+\hline
+1x CCX13 & 585 $\pm$ 1 & 159.5 $\pm$ 6.5 & 526 $\pm$ 1 & 100 / 0.0 \\
+\hline
+2x CPX22 + LB & 1868 $\pm$ 17 & 81.2 $\pm$ 1.3 & 1743 $\pm$ 96 & 98 / 0.0 \\
+\hline
+\multicolumn{5}{l}{$^*$Highest offered rate with p95 $<$ 100 ms, errors $<$ 1\%, dropped $<$ 1\%.} \\
+\multicolumn{5}{l}{$^\dagger$Mean of 2 runs: one stepped test wrote no result file.} \\
+\end{tabular}
+\end{table}

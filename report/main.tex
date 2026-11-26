@@ -1,0 +1,404 @@
+\documentclass[conference,a4paper]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{cite}
+
+\lstset{
+	basicstyle=\ttfamily\footnotesize,
+	keywordstyle=\color{blue}\bfseries,
+	commentstyle=\color{gray}\itshape,
+	stringstyle=\color{red},
+	numbers=left,
+	numberstyle=\tiny\color{gray},
+	numbersep=5pt,
+	frame=single,
+	breaklines=true,
+	captionpos=b,
+	tabsize=4
+}
+
+% ---------------------------------------------------------------------------
+% WRITING NOTES - every red box is a note for Yousef, not report text.
+% Replace each \note{...} with your own paragraph(s), then delete it.
+% Before submitting, search this file for "\note" - there must be none left.
+% ---------------------------------------------------------------------------
+\newcommand{\note}[1]{\par\noindent\fcolorbox{red}{red!4}{\parbox{0.94\linewidth}{\footnotesize\color{red!60!black}\textbf{WRITE:} #1}}\par\smallskip}
+\newcommand{\figureorbox}[2]{\IfFileExists{#1}{\includegraphics[width=#2]{#1}}{\fbox{\parbox[c][2.5cm][c]{#2}{\centering\footnotesize\color{red}missing file: \texttt{\detokenize{#1}}}}}}
+
+\begin{document}
+
+\title{Right-Sizing a Study-App API on Hetzner Cloud: Cost per 1,000 Requests for Shared, Dedicated, and Scale-Out Servers\\
+	{\footnotesize SEN421 --- Cloud Architecture and Services, Course Project, Fall 2026\\
+		Istanbul Ayd\i n University}
+}
+
+\author{\IEEEauthorblockN{Yousef Aboismail}
+	\IEEEauthorblockA{\textit{Department of Computer Engineering}\\
+		\textit{Istanbul Ayd\i n University}\\
+		Istanbul, Turkey \\
+		Student ID: B2105.010055 \\
+		yousefabdelhalemabde@stu.aydin.edu.tr}
+}
+
+\maketitle
+
+\begin{abstract}
+Choosing a server size is a common decision for small teams that run their own web applications, and the cheapest server per month is not always the cheapest per request. This hands-on study (Topic 4, Part A) asks which Hetzner Cloud configuration serves a small study-app API at the lowest cost per 1,000 requests while keeping the 95th-percentile response time below 100 milliseconds. A FastAPI application with synthetic flashcard data was deployed with Terraform in the Helsinki region on four configurations: a shared two-vCPU CPX22, a shared four-vCPU CPX32, a dedicated two-vCPU CCX13, and two CPX22 servers behind a load balancer. A k6 load generator in the same private network ran a saturation test and a stepped-load test three times for each configuration. The CPX22 and the CPX32 reached about 1,140 and 1,875 requests per second and were the most cost-effective, at about 7.2 and 7.3 millionths of a US dollar per 1,000 requests under the latency objective. Two CPX22 servers reached the same throughput as one CPX32 but cost about 40 percent more per request. The dedicated CCX13 reached only 585 requests per second at 4.3 times the cost per request, because its two vCPUs are two threads of one core of an older processor. For a small study app, starting with one shared CPX22 and scaling up to a CPX32 is recommended.
+\end{abstract}
+
+\begin{IEEEkeywords}
+cloud computing, right-sizing, load testing, cost per request, shared vCPU
+\end{IEEEkeywords}
+
+% =====================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+Small development teams that run their own web applications have to decide which virtual server to rent. There are many types of servers offered by cloud providers, and the cost of a more powerful server often rises faster than its performance. On Hetzner Cloud, a server with two dedicated vCPUs is about twice as expensive as a server with two shared vCPUs~\cite{hz-api}. Consequently, a decision based only on the price, or choosing the most powerful server available for the budget, may result in poor performance or unnecessary spending.
+
+The author develops Recall, a study app for students built with FastAPI and PostgreSQL with the pgvector extension, which offers AI-assisted study features and is planned with Free, Pro and Max subscription plans. Because a free plan has to be cheap to serve, the cost of each request matters as much as the response time.
+
+In this work, such a decision problem is investigated for a simplified version of Recall's API. The questions are: which Hetzner Cloud configuration provides the lowest cost per 1,000 requests for this API while keeping the 95th-percentile response time below 100 ms, and when are two small servers behind a load balancer cheaper per request than one larger server?
+
+This work studies four configurations: a small server with shared vCPUs, a larger server with shared vCPUs, a small server with dedicated vCPUs, and two small servers behind a load balancer. All configurations are provisioned using Terraform in the Helsinki region and tested with k6 from a separate server in the same private network. Each test is repeated three times, and the cost per 1,000 requests is calculated from Hetzner's official price list. Section~\ref{sec:related_work} explains the background, Section~\ref{sec:design} the design, Section~\ref{sec:methodology} the method, Section~\ref{sec:results} the results, and Section~\ref{sec:discussion} the discussion; Section~\ref{sec:conclusion} concludes the paper.
+
+% =====================================================================
+\section{Background and Related Work}
+\label{sec:related_work}
+
+The NIST definition of cloud computing is made up of five essential characteristics: on-demand self-service, broad network access, resource pooling, rapid elasticity, and measured service~\cite{nist}. In the Infrastructure-as-a-Service (IaaS) model, the provider takes care of the underlying infrastructure, whereas the user takes care of the operating system and the software installed on it~\cite{nist}, \cite{west}. The virtual servers used in this research are IaaS resources. Hetzner charges an hourly rate, and the charge for a server never exceeds a fixed monthly price~\cite{hz-ccx}, which is a direct example of measured service: a server used for one hour is billed for one hour.
+
+Right-sizing refers to the selection of the smallest and least costly resource that fulfills the requirements of the workload. For increased capacity, there are two choices: scaling up (vertical scaling), where the application is moved to a bigger server, and scaling out (horizontal scaling), where additional servers are added and the requests are distributed among them~\cite{west}. Scaling out requires a load balancer. The Hetzner load balancer directs incoming requests to the target servers either in round-robin order or to the server with the lowest number of connections~\cite{hz-lb}.
+
+Hetzner offers cloud servers with either shared or dedicated resources at different prices~\cite{hz-servers}. On dedicated plans, the vCPUs belong to a single tenant, and hence there is no issue of ``noisy neighbors''~\cite{hz-ccx}. On shared plans, multiple virtual machines share the same physical cores. If a vCPU is ready to run but the hypervisor gives the physical core to another virtual machine, Linux counts this waiting time as steal time in the \texttt{/proc/stat} file. Hence, high steal time is an indicator of resource competition; this work measures it on every server.
+
+Leitner and Cito analyzed the performance of multiple public IaaS clouds and found that multi-tenancy can significantly influence both performance and its predictability, although it does so differently for different providers~\cite{leitner}. They also found that the same instance type running on different hardware was less common than earlier studies had assumed. For this study, it means that a single measurement on a cloud server might be misleading. Every test is therefore conducted three times, and both the mean and the standard deviation are reported.
+
+A load generator operates under one of two models. In the closed model, a constant number of users each send a request, wait for the response, and only then send the next one. In the open model, requests arrive at a fixed rate, independent of whether the previous ones were answered~\cite{k6-open}. According to Schroeder et al., the two models may yield very different response times when applied to the same system under the same load~\cite{schroeder}. This work therefore uses both tests: the closed one to determine the maximum achievable throughput, and the open one with a fixed arrival rate~\cite{k6-car} to verify the latency objective, since real users do not wait for other users' requests.
+
+The average response time does not show how slow some of the requests actually were. This research therefore uses percentiles. The 95th percentile (p95) is the response time that 95\% of all requests are faster than. A service level objective (SLO) is a measurable target for such a value. In this work, the SLO is a p95 response time below 100 ms with less than 1\% failed requests.
+
+The references above provide only a general discussion of the trade-offs between server sizes and between shared and dedicated CPUs, or measurements on other providers. None of them provides the cost of serving 1,000 requests with current Hetzner server types for a typical web API, and cloud prices change frequently; for example, Hetzner raised its cloud prices again on 15 June 2026~\cite{hz-price}. This paper addresses this gap with an empirical measurement and a cost model based on the official prices on the date of the experiment.
+
+% =====================================================================
+\section{System Design}
+\label{sec:design}
+
+\subsection{Architecture}
+
+Fig.~\ref{fig:architecture} shows the experiment setup. All resources run in Hetzner Cloud in Helsinki (hel1) and are connected by one private network, 10.0.1.0/24. A load generator (CPX42, 8 vCPU) sends requests to the configuration under test over this network, so the results do not include internet latency. Each target server runs the application in Docker with host networking and one Uvicorn worker process per vCPU. Configuration (d) adds a Hetzner LB11 load balancer that is attached only to the private network, distributes requests in round-robin order, and checks the \texttt{/health} endpoint of each server~\cite{hz-lb}. The target servers have a firewall that accepts traffic only from 10.0.0.0/16, and only the load generator accepts SSH on port 22, from the author's IP address only~\cite{hz-fw}. All 16 resources (six servers, the load balancer with its service and targets, the private network and subnet, two firewalls and an SSH key) are created and deleted with Terraform~\cite{tf-hcloud}.
+
+\begin{figure*}[t]
+	\centerline{\figureorbox{figures/architecture.pdf}{\textwidth}}
+	\caption{Experiment architecture in Hetzner Cloud (Helsinki). The load generator sends HTTP requests to each configuration over the private network; configuration (d) uses a load balancer with two servers. The target servers accept no traffic from the internet.}
+	\label{fig:architecture}
+\end{figure*}
+
+\subsection{Workload}
+
+The application is a simplified stand-in for a study-app API. It is written with FastAPI and serves 50,000 synthetic flashcards from a read-only SQLite database, so no personal data is used. 70\% of the requests read the 20 next due cards of a deck, which is a light database read with JSON output. The other 30\% submit a typed answer, which the server grades against every card of the deck using character-trigram similarity and then reschedules with the SM-2 algorithm; this request is CPU-heavy. The mix imitates a study session in which a student mostly reads cards and sometimes answers them.
+
+Compared with Recall, the stand-in keeps FastAPI, the reading of cards and the grading of answers, but replaces PostgreSQL and pgvector with SQLite and leaves out the calls to the AI model.
+
+\subsection{Alternatives Compared}
+
+The experiment uses Hetzner Cloud because the author already had an account there and it bills per hour. Helsinki was chosen because, on the day of the experiment, all four server types could be ordered there and it was the cheapest EU location for each of them~\cite{hz-api}. Table~\ref{tab:alternatives} lists the four configurations. Configuration (a) is the baseline: the shared-vCPU type with two vCPUs. Configuration (b) tests scaling up to four shared vCPUs. Configuration (c) has the same number of vCPUs as (a), but dedicated, to test whether reserved CPUs are worth their higher price. Configuration (d) tests scaling out with two servers of type (a) behind a load balancer.
+
+\begin{table}[htbp]
+	\caption{Configurations Compared (Hetzner Helsinki, Prices Accessed 26~Nov.~2026, USD, excl. VAT)}
+	\label{tab:alternatives}
+	\centering
+	\footnotesize
+	\setlength{\tabcolsep}{3pt}
+	\begin{tabular}{|l|c|c|c|r|}
+		\hline
+		\textbf{Configuration} & \textbf{vCPU} & \textbf{RAM} & \textbf{CPU} & \textbf{USD/mo}$^*$ \\
+		\hline
+		(a) 1 $\times$ CPX22 & 2 & 4 GB & shared & 20.09 \\
+		\hline
+		(b) 1 $\times$ CPX32 & 4 & 8 GB & shared & 36.09 \\
+		\hline
+		(c) 1 $\times$ CCX13 & 2 & 8 GB & dedicated & 43.09 \\
+		\hline
+		(d) 2 $\times$ CPX22 + LB11 & 2+2 & 4+4 GB & shared & 46.87 \\
+		\hline
+		\multicolumn{5}{l}{$^*$Server price plus one primary IPv4 (0.60) for (a)--(c);} \\
+		\multicolumn{5}{l}{\phantom{$^*$}two servers plus load balancer (7.89) for (d).} \\
+	\end{tabular}
+\end{table}
+
+\subsection{Requirements and Responsibilities}
+
+The design must meet four requirements. (1) Performance: a p95 response time below 100 ms with less than 1\% failed requests (the SLO). (2) Cost: the lowest cost per 1,000 requests that still meets the SLO. (3) Security: no public access to the application servers and no secrets in the code repository; the Hetzner API token was kept only in an environment variable. (4) Legal: only synthetic data is used, so KVKK does not apply to the experiment itself. A real deployment with student data would have to follow KVKK, including its rules for transferring personal data abroad, because the servers are in Finland. Table~\ref{tab:responsibility} shows how responsibility is shared between Hetzner and the student in this design.
+
+\begin{table}[htbp]
+	\caption{Shared Responsibility in This Design}
+	\label{tab:responsibility}
+	\centering
+	\footnotesize
+	\begin{tabular}{|p{0.46\linewidth}|c|c|}
+		\hline
+		\textbf{Layer} & \textbf{Hetzner} & \textbf{Student} \\
+		\hline
+		Data centre, hardware, hypervisor & \checkmark & \\
+		\hline
+		Firewall service; private network isolation & \checkmark & \\
+		\hline
+		Firewall rules; which servers are in the network & & \checkmark \\
+		\hline
+		Load balancer availability and health checks & \checkmark & \\
+		\hline
+		Load balancer configuration (targets, ports) & & \checkmark \\
+		\hline
+		Operating system updates, Docker, application & & \checkmark \\
+		\hline
+		Data, access control of the API & & \checkmark \\
+		\hline
+		API token and SSH key protection & & \checkmark \\
+		\hline
+		Deleting resources (cost control) & & \checkmark \\
+		\hline
+	\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{Environment}
+
+Table~\ref{tab:environment} summarizes the test environment.
+
+\begin{table}[htbp]
+	\caption{Experimental Environment}
+	\begin{center}
+		\footnotesize
+		\begin{tabular}{|l|p{0.56\linewidth}|}
+			\hline
+			\textbf{Property} & \textbf{Value} \\
+			\hline
+			Provider and region & Hetzner Cloud, Helsinki (hel1) \\
+			\hline
+			Configurations & see Table~\ref{tab:alternatives} \\
+			\hline
+			Operating system & Ubuntu 24.04 LTS \\
+			\hline
+			Application & FastAPI 0.115.6, Uvicorn 0.34.0, Python 3.12, Docker (host network), 1 worker per vCPU \\
+			\hline
+			Data & 50,000 synthetic cards, SQLite, read-only \\
+			\hline
+			Request mix & 70\% GET cards, 30\% POST review \\
+			\hline
+			Load generator & CPX42 (8 vCPU) in the same private network, k6 v2.4.0 in Docker \\
+			\hline
+			Test 1 (saturation) & closed model, 64 virtual users, 90 s \\
+			\hline
+			Test 2 (stepped) & open model, 8 steps at 20--110\% of Test 1 throughput, 15 s each, 5 s gap \\
+			\hline
+			SLO & p95 $<$ 100 ms, errors $<$ 1\%, dropped $<$ 1\% \\
+			\hline
+			Repetitions & 3 per configuration, order rotated, 30 s cool-down \\
+			\hline
+			Infrastructure as code & Terraform with the hcloud provider \\
+			\hline
+		\end{tabular}
+		\label{tab:environment}
+	\end{center}
+\end{table}
+
+\subsection{Measurements}
+
+Each configuration was tested in two ways. Test~1 (saturation) uses the closed model: 64 virtual users send requests back to back for 90~s, and the measured throughput is the maximum the configuration can serve. Test~2 (stepped load) uses the open model~\cite{k6-car} with eight steps of 15~s at 20, 40, 60, 70, 80, 90, 100 and 110\% of the Test~1 throughput of the same run, with 5~s pauses between steps. The capacity under the SLO is the highest step at which that step and all lower steps had a p95 below 100 ms, less than 1\% errors and less than 1\% dropped requests. A 15~s warm-up was run and discarded before each pair of tests, and a 30~s cool-down followed each test. CPU busy and steal time were read from \texttt{/proc/stat} on every target and on the load generator before and after each test. All tests were repeated three times, and the order of the configurations was rotated in each repetition so that no configuration always ran first~\cite{leitner}.
+
+\subsection{Cost Model}
+
+The steady-state cost of each configuration is based on its monthly price, because a production server runs all month. For (a)--(c), the monthly price is the server plus one public IPv4 address; for (d), it is two servers plus the load balancer, because servers behind a load balancer do not need public addresses. Prices were taken from the Hetzner API price list on 26 November 2026~\cite{hz-api}; Hetzner bills per hour with a monthly cap~\cite{hz-ccx}. The cost of 1,000 requests is
+
+\begin{equation}
+C_{1000} = \frac{P_{\text{month}} / 730}{3600 \cdot X} \times 1000
+\label{eq:cost}
+\end{equation}
+
+where $C_{1000}$ is the cost of 1,000 requests in USD, $P_{\text{month}}$ the monthly price from Table~\ref{tab:alternatives}, 730 the number of hours in a month, and $X$ the throughput in requests per second (the Test~1 maximum or the capacity under the SLO). For the scale-out configuration, the scaling efficiency is $E = X_{(d)} / (2 \cdot X_{(a)})$.
+
+\subsection{Reproducibility and Cost Tracking}
+
+All code is in a public repository (Appendix~\ref{app:code}). One command (\texttt{terraform apply}) creates the environment, one script (\texttt{run\_all.sh}) runs all tests, and one command (\texttt{terraform destroy}) deletes everything. The API token was stored only in an environment variable, and a cost alert was set in the Hetzner Console before any resource was created~\cite{hz-billing}. The k6 container image is recorded by its digest. The first deployment attempt failed because the private network interface of the Ubuntu 24.04 servers stayed down without an address; a netplan configuration that enables DHCP on this interface was added to the cloud-init templates, and all servers were recreated with Terraform.
+
+% =====================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Performance Results}
+
+\IfFileExists{tables/tab_perf.tex}{\input{tables/tab_perf.tex}}{\note{Table \texttt{tables/tab\_perf.tex} is created by \texttt{analysis/analyze.py}.}}
+
+\begin{figure}[htbp]
+	\centerline{\figureorbox{figures/fig_throughput.pdf}{0.95\linewidth}}
+	\caption{Maximum throughput of each configuration in Test 1 (mean of three runs; error bars show one standard deviation).}
+	\label{fig:throughput}
+\end{figure}
+
+\begin{figure}[htbp]
+	\centerline{\figureorbox{figures/fig_latency.pdf}{0.95\linewidth}}
+	\caption{95th-percentile response time against offered load in Test 2 (mean of three runs). The dashed line is the 100 ms objective.}
+	\label{fig:latency}
+\end{figure}
+
+Table~\ref{tab:perf} and Fig.~\ref{fig:throughput} show the results of Test~1. The larger shared server (b) and the two small servers behind the load balancer (d) reached almost the same maximum throughput, 1875 and 1868 requests per second. The small shared server (a) reached 1137 requests per second and the dedicated server (c) only 585, about half of (a). The results were very repeatable: the standard deviation of the maximum throughput was below 1\% of the mean for every configuration. All target servers were at 98--100\% CPU at saturation, while the load generator used only 2--6\%, so the targets were the bottleneck. CPU steal time was 0.0\% on every server in every run, and no request failed in Test~1.
+
+Fig.~\ref{fig:latency} shows the p95 response time in Test~2. All configurations stayed far below the 100 ms target up to 90\% of their maximum throughput and then rose sharply. Configuration (b) met the target even at 100\% of its maximum in both complete runs (p95 of 85 and 91 ms), so its capacity under the SLO equals its maximum throughput. The capacity under the SLO was 1061 requests per second for (a), 1884 for (b), 526 for (c) and 1743 for (d). The third stepped test of (b) wrote no result file, so its value is the mean of two runs. Errors stayed below 0.7\% even in the overloaded 110\% step.
+
+\subsection{Cost Results}
+
+\IfFileExists{tables/tab_cost.tex}{\input{tables/tab_cost.tex}}{\note{Table \texttt{tables/tab\_cost.tex} is created by \texttt{analysis/analyze.py}.}}
+
+\begin{figure}[htbp]
+	\centerline{\figureorbox{figures/fig_cost.pdf}{0.95\linewidth}}
+	\caption{Cost per 1,000 requests at the capacity that meets the 100 ms objective (millionths of a US dollar; lower is better).}
+	\label{fig:cost}
+\end{figure}
+
+Table~\ref{tab:cost} and Fig.~\ref{fig:cost} show the cost per 1,000 requests. At the capacity under the SLO, the small shared server (a) and the larger shared server (b) were the cheapest and almost equal, at 7.22 and 7.29 millionths of a US dollar. The scale-out configuration (d) cost 10.25, about 40\% more than (b), and the dedicated server (c) cost 31.17, about 4.3 times as much as (a). The ranking was the same when the maximum throughput was used instead of the SLO capacity.
+
+The whole experiment, including a first deployment that had to be recreated, ran for about 2.5 hours. The actual cost shown on the Hetzner Usage page was \textbf{[X.XX] USD}. All resources were deleted with \texttt{terraform destroy} on 26 November 2026; the Hetzner Console showed no remaining servers, load balancers, networks or IP addresses.
+
+\note{Replace [X.XX] with the real amount from Hetzner Console $\rightarrow$ Usage (check it this evening) and keep the screenshot.}
+
+\subsection{Comparison of Alternatives}
+
+Scaling up (b) and scaling out (d) reached the same throughput, but scaling out cost 30\% more per month (46.87 vs.\ 36.09 USD). The two small servers together achieved 1.64 times the throughput of one small server, a scaling efficiency of 82\%. The dedicated CCX13 cost 2.1 times as much per month as the shared CPX22 but delivered only 0.51 times its throughput. A check with \texttt{lscpu} showed that the CCX13 virtual machine reports one core with two threads on an AMD EPYC Milan processor, while the CPX22 reports two cores with one thread each on an AMD EPYC Genoa processor.
+
+% =====================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Recommended Configuration}
+
+For an API like Recall's, the results favour shared-vCPU servers. The CPX22 and the CPX32 had practically the same cost per 1,000 requests (7.22 and 7.29 millionths of a US dollar), so the choice between them depends on the expected load rather than on efficiency. One CPX22 met the 100 ms objective up to about 1,060 requests per second, far more than a new study app needs, so it is the sensible starting point. When the peak load approaches that capacity, moving to a CPX32 keeps the same cost per request while almost doubling the capacity and lowering the p95 at full load from about 85 ms to 58 ms. A common assumption is that a dedicated server is the safe choice for latency; for this workload, the measurements showed the opposite.
+
+\subsection{Scaling Up versus Scaling Out}
+
+Two CPX22 servers behind the load balancer reached 1.64 times the throughput of one CPX22, a scaling efficiency of 82\%. The load balancer receives and forwards every HTTP request, which adds a network hop, and round-robin distribution does not take into account how busy each server is. Together with the price of the load balancer (7.89 USD per month), this made scaling out about 40\% more expensive per request than one CPX32. What configuration (d) offers in return, and this experiment did not measure, is availability: if one server fails, the health check removes it and the other server keeps serving requests, while a single CPX32 is a single point of failure. For a small app, the cheaper scale-up option is reasonable; for a service where downtime is costly, the extra 10.78 USD per month buys redundancy.
+
+\subsection{Shared versus Dedicated vCPUs}
+
+The dedicated CCX13 was the worst choice for this workload: 2.1 times the price of a CPX22 for half of its throughput. The \texttt{lscpu} output explains most of the gap. The two vCPUs of the CCX13 are two hardware threads of one core of an older AMD EPYC Milan processor, while the CPX22 provides two separate cores of a newer EPYC Genoa processor. Two threads that share one core cannot do the work of two cores, so a CPU-bound Python API gains little from the second thread. ``Dedicated'' therefore guarantees that the CPU time is not shared with other customers~\cite{hz-ccx}, not that it is fast. In addition, steal time on the shared servers was 0.0\% in every run, so during this experiment they suffered no measurable interference from neighbours, and the main benefit of dedicated vCPUs did not appear. Dedicated servers may still be worth their price for steady, round-the-clock load or for latency-critical systems at busy times, when shared hosts are more loaded and performance is less predictable~\cite{leitner}.
+
+\subsection{Larger Scale and the Real Application}
+
+The tested application keeps all data in a local read-only SQLite file and does not call an AI model. In Recall, the database is PostgreSQL with pgvector, and some requests wait for an external AI service. At a larger scale, the database would become a separate tier and a likely bottleneck, so adding application servers would not increase capacity linearly. Requests that wait for an AI model spend most of their time waiting rather than computing, so the number of requests a server can hold open, and not its CPU, may limit capacity, and the right size could be different. Real traffic also changes over the day; without autoscaling, capacity has to be planned for the peak, which makes the real cost per request at average load higher than the values measured here.
+
+\subsection{Security and Shared Responsibility}
+
+Table~\ref{tab:responsibility} summarizes who protected what. Hetzner was responsible for the data centre, the hypervisor, the firewall service and the isolation of the network; the student was responsible for the firewall rules, the operating system, the application, the API token and deleting the resources. Two observations matter for a real deployment. First, an SSH connection from the load generator to a target worked over the private network, although the target's firewall had no rule for port 22. This matches Hetzner's documentation that Cloud Firewalls do not filter private-network traffic~\cite{hz-fw}, so every server in the network can reach every port of every other server. Second, traffic inside a Hetzner network is isolated but not encrypted~\cite{hz-net}. For real student data, the API would need authentication, TLS also between the load balancer and the servers, a host firewall on each server, regular operating system updates and a separate network for the database.
+
+\subsection{Limitations}
+
+Each test lasted minutes, not days, and all tests ran in one region during one afternoon, so the effect of busier hours on shared servers was not observed. The application is a simplified version of a real study app. The stepped test used steps of 10\% near the maximum, so the capacity under the SLO is only known to within about 10\%. One of the three stepped tests of configuration (b) produced no result file, and its capacity is the mean of two runs. The load generator was in the same data centre, so the response times do not include the network delay that real users would see. The cheaper cost-optimized CX and CAX server types could not be ordered at the time and were not tested. Finally, the cost model uses the prices of a single day, and Hetzner changed its cloud prices during 2026~\cite{hz-price}, so the ranking could change with the next price list.
+
+\subsection{Unexpected Findings and Ethical Points}
+
+The most unexpected result was that the dedicated server was both the slowest and the most expensive per request. A second surprise was the deployment problem: on the first attempt, the private network interface of every server stayed down without an address, so the load generator could not reach any target. After the cause was found, the fix was added to the cloud-init templates and all servers were recreated with one Terraform command; infrastructure as code turned a manual repair of six servers into a repeatable change. Only synthetic data was used, and all load tests targeted the author's own resources. If Recall stored real students' data on these servers, the data would be processed in Finland, so KVKK's rules on transferring personal data abroad, together with encryption and access control, would have to be addressed before deployment.
+
+% =====================================================================
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+This study measured the cost per 1,000 requests of four Hetzner Cloud configurations for a small study-app API. The shared-vCPU servers were the most cost-effective: one CPX22 and one CPX32 both served 1,000 requests for about 7.2 to 7.3 millionths of a US dollar while meeting the 100 ms objective, whereas two CPX22 servers behind a load balancer cost about 40\% more per request and the dedicated CCX13 cost 4.3 times more. For an API like Recall's, the recommendation is to start with one CPX22, move to a CPX32 when the peak load approaches about 1,000 requests per second, and add a second server behind a load balancer only when availability matters more than cost. The main lessons are that a ``dedicated'' label does not guarantee more performance, that the cheapest server per month can also be the cheapest per request, and that infrastructure as code makes a failed deployment easy to repair. Future work should repeat the tests over 24 hours and at different times of day, include PostgreSQL with pgvector and the AI calls of the real application, test the least-connections algorithm, add the CX and CAX types when they can be ordered again, and compare another provider.
+
+% =====================================================================
+\section*{AI Tool Use and Originality Declaration}
+\label{sec:ai_declaration}
+
+AI-assisted tools (Claude, Anthropic) were used extensively in this project: to suggest the topic, to generate and debug the Terraform, Docker, k6 and analysis code, to draw the architecture diagram, to find documentation, and to draft large parts of the report text, which the student then reviewed and edited. The student chose the topic and the configurations, ran all experiments on his own Hetzner account, diagnosed the deployment problem with AI guidance, checked the CPU models of the servers, and verified the numbers against the raw results and the prices against the Hetzner API. The student accepts full responsibility for the accuracy, originality and integrity of the submitted work.
+
+\note{Before submitting: make sure every sentence of this declaration and every level in Table~\ref{tab:ai_use} is true. If you rewrite the Discussion and Conclusion in your own words, lower the last two rows to 3 and change the text to say so.}
+
+\begin{table}[htbp]
+	\caption{AI Use Disclosure Summary}
+	\label{tab:ai_use}
+	\centering
+	\footnotesize
+	\begin{tabular}{|p{0.35\linewidth}|c|p{0.38\linewidth}|}
+		\hline
+		\textbf{Project Stage} & \textbf{Level} & \textbf{Brief Description} \\
+		\hline
+		Topic and question & 3 & Topic options suggested; question chosen and refined by student \\
+		\hline
+		Literature and documentation search & 3 & Sources suggested; read and verified by student \\
+		\hline
+		Design, deployment, and configuration & 4 & Terraform, Docker and k6 code and the architecture diagram generated with AI; reviewed, run and debugged by student \\
+		\hline
+		Measurement, cost analysis, and modeling & 4 & Analysis script generated with AI; experiments run and numbers verified by student \\
+		\hline
+		Writing, editing, and LaTeX formatting & 5 & Introduction and Background rephrased by student from AI examples; other sections drafted by AI and edited by student; LaTeX by AI \\
+		\hline
+		Interpretation, discussion, and conclusion & 5 & Drafted by AI from the student's results; reviewed and edited by student \\
+		\hline
+	\end{tabular}
+\end{table}
+
+% =====================================================================
+\begin{thebibliography}{00}
+
+\bibitem{nist} P.~Mell and T.~Grance, ``The NIST definition of cloud computing,'' National Institute of Standards and Technology, Gaithersburg, MD, USA, NIST Special Publication 800-145, 2011.
+
+\bibitem{west} J.~West, \textit{CompTIA Cloud+ Guide to Cloud Computing}, 2nd~ed. Boston, MA, USA: Cengage, 2024.
+
+\bibitem{leitner} P.~Leitner and J.~Cito, ``Patterns in the chaos---A study of performance variation and predictability in public IaaS clouds,'' \textit{ACM Trans. Internet Technol.}, vol.~16, no.~3, pp.~15:1--15:23, 2016, doi: 10.1145/2885497.
+
+\bibitem{schroeder} B.~Schroeder, A.~Wierman, and M.~Harchol-Balter, ``Open versus closed: A cautionary tale,'' in \textit{Proc. 3rd USENIX Symp. Networked Systems Design and Implementation (NSDI~'06)}, San Jose, CA, USA, 2006, pp.~239--252.
+
+\bibitem{hz-servers} Hetzner Online GmbH, ``Cloud servers: Overview,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/cloud/servers/overview/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-ccx} Hetzner Online GmbH, ``Cloud servers with dedicated vCPU (General Purpose),'' Hetzner. [Online]. Available: \url{https://www.hetzner.com/cloud/general-purpose}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-api} Hetzner Online GmbH, ``Hetzner Cloud API reference: Pricing and server types,'' Hetzner Cloud Docs. [Online]. Available: \url{https://docs.hetzner.cloud/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-price} Hetzner Online GmbH, ``Price adjustment,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-billing} Hetzner Online GmbH, ``Billing FAQ,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/cloud/billing/faq/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-lb} Hetzner Online GmbH, ``Load Balancers: Overview,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/cloud/load-balancers/overview}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-fw} Hetzner Online GmbH, ``Firewalls: FAQ,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/cloud/firewalls/faq/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{hz-net} Hetzner Online GmbH, ``Networks: FAQ,'' Hetzner Docs. [Online]. Available: \url{https://docs.hetzner.com/cloud/networks/faq}. [Accessed: 26 Nov. 2026].
+
+\bibitem{k6-open} Grafana Labs, ``Open and closed models,'' Grafana k6 Documentation. [Online]. Available: \url{https://grafana.com/docs/k6/latest/using-k6/scenarios/concepts/open-vs-closed/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{k6-car} Grafana Labs, ``Constant arrival rate,'' Grafana k6 Documentation. [Online]. Available: \url{https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-arrival-rate/}. [Accessed: 26 Nov. 2026].
+
+\bibitem{tf-hcloud} Hetzner Cloud, ``hcloud provider,'' Terraform Registry. [Online]. Available: \url{https://registry.terraform.io/providers/hetznercloud/hcloud/latest/docs}. [Accessed: 26 Nov. 2026].
+
+\end{thebibliography}
+
+\appendix
+
+\section{Code Repository}
+\label{app:code}
+
+\note{Put your public GitHub link in the line above (replace yourusername/project-repo).}
+
+\begin{lstlisting}[language=bash, caption={Core loop of the benchmark runner (excerpt of run\_all.sh)}, label={lst:runs}]
+for run in $(seq 1 "$RUNS"); do
+  for k in $(seq 0 $((N - 1))); do
+    # rotate the order of configurations every run
+    line=${LINES[$(( (k + run - 1) % N ))]}
+    k6run saturation.js ...   # Test 1: 64 VUs, 90 s
+    k6run step.js ...         # Test 2: 8 rate steps
+    sleep "$COOLDOWN"
+  done
+done
+\end{lstlisting}
+
+\end{document}

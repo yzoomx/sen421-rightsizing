@@ -1,0 +1,36 @@
+#cloud-config
+# Target server: installs Docker, builds the benchmark API image and runs it
+# with one worker process per vCPU. Host networking avoids Docker NAT overhead.
+package_update: true
+packages:
+  - docker.io
+write_files:
+  # Bring up the private network interface with DHCP. On these Hetzner Ubuntu
+  # 24.04 servers it stayed DOWN without an address, so it is configured here.
+  - path: /etc/netplan/60-private.yaml
+    permissions: "0600"
+    content: |
+      network:
+        version: 2
+        ethernets:
+          private:
+            match:
+              name: "en*"
+            dhcp4: true
+  - path: /opt/app/main.py
+    encoding: b64
+    content: ${main_py}
+  - path: /opt/app/gen_data.py
+    encoding: b64
+    content: ${gen_data_py}
+  - path: /opt/app/requirements.txt
+    encoding: b64
+    content: ${requirements}
+  - path: /opt/app/Dockerfile
+    encoding: b64
+    content: ${dockerfile}
+runcmd:
+  - netplan apply
+  - systemctl enable --now docker
+  - docker build -t bench-app /opt/app
+  - docker run -d --name app --restart unless-stopped --network host -e WORKERS=$(nproc) bench-app

@@ -1,0 +1,42 @@
+#cloud-config
+# Load generator: installs Docker (k6 runs as the official grafana/k6 image),
+# jq and curl, and writes the test scripts and the list of targets.
+package_update: true
+packages:
+  - docker.io
+  - jq
+  - curl
+write_files:
+  # Bring up the private network interface with DHCP. On these Hetzner Ubuntu
+  # 24.04 servers it stayed DOWN without an address, so it is configured here.
+  - path: /etc/netplan/60-private.yaml
+    permissions: "0600"
+    content: |
+      network:
+        version: 2
+        ethernets:
+          private:
+            match:
+              name: "en*"
+            dhcp4: true
+  - path: /opt/bench/run_all.sh
+    encoding: b64
+    permissions: "0755"
+    content: ${run_all}
+  - path: /opt/bench/targets.txt
+    encoding: b64
+    content: ${targets}
+  - path: /opt/bench/loadtest/workload.js
+    encoding: b64
+    content: ${workload_js}
+  - path: /opt/bench/loadtest/saturation.js
+    encoding: b64
+    content: ${saturation_js}
+  - path: /opt/bench/loadtest/step.js
+    encoding: b64
+    content: ${step_js}
+runcmd:
+  - netplan apply
+  - systemctl enable --now docker
+  - docker pull grafana/k6:latest
+  - touch /opt/bench/READY

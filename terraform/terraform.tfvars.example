@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and edit. Do NOT put your API token here
+# (set it with:  $env:HCLOUD_TOKEN = "..."  in PowerShell).
+
+location     = "nbg1"        # nbg1, fsn1 or hel1 - pick one where all types below are orderable
+network_zone = "eu-central"
+
+ssh_public_key_path = "~/.ssh/sen421.pub"
+# ssh_allowed_cidrs = ["203.0.113.7/32"]   # your public IP (preflight.ps1 prints it)
+
+loadgen_type = "cpx32"
+
+configs = {
+  "a-small-shared"    = { type = "cpx22", count = 1 }
+  "b-large-shared"    = { type = "cpx32", count = 1 }
+  "c-small-dedicated" = { type = "ccx13", count = 1 }
+  "d-2x-small-lb"     = { type = "cpx22", count = 2 }
+}

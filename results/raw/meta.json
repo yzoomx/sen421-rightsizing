@@ -1,0 +1,10 @@
+{
+  "started_utc": "2026-11-26T11:42:30Z",
+  "k6_version": "k6 v2.4.0 (commit/dd9395906d, go1.27.3, linux/amd64)",
+  "k6_image_digest": "grafana/k6@sha256:3d8e5c7f1d53ec59408c2ffbd9943602a0985ffcbd4a2430ec00f3ffca89796e",
+  "loadgen_nproc": 8,
+  "loadgen_kernel": "6.8.0-151-generic",
+  "runs": 3, "sat_vus": 64, "sat_duration": "90s",
+  "step_seconds": 15, "gap_seconds": 5, "slo_p95_ms": 100,
+  "step_fractions": "0.2 0.4 0.6 0.7 0.8 0.9 1.0 1.1", "cooldown_s": 30
+}

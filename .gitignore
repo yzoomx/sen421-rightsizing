@@ -1,0 +1,15 @@
+# Never commit secrets or Terraform state
+terraform/terraform.tfvars
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+*.pem
+.env
+__pycache__/
+
+# Screenshots may show tokens or IPs in the terminal: keep them out of the repo
+Screenshot/
+*.png.bak
+# Zips for Overleaf / submission are build outputs
+*.zip

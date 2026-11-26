@@ -1,0 +1,25 @@
+\begin{table}[htbp]
+\caption{Monthly Price and Cost per 1,000 Requests (USD, excl. VAT)}
+\label{tab:cost}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{USD/month}$^*$ & \multicolumn{2}{c|}{\textbf{$\mu$USD per 1,000 req.}} \\
+\cline{3-4}
+ & & \textbf{at max} & \textbf{at SLO} \\
+\hline
+1x CPX22 & 20.09 & 6.73 $\pm$ 0.05 & 7.22 $\pm$ 0.39 \\
+\hline
+1x CPX32 & 36.09 & 7.33 $\pm$ 0.06 & 7.29 $\pm$ 0.02$^\dagger$ \\
+\hline
+1x CCX13 & 43.09 & 28.05 $\pm$ 0.03 & 31.17 $\pm$ 0.06 \\
+\hline
+2x CPX22 + LB & 46.87 & 9.55 $\pm$ 0.09 & 10.25 $\pm$ 0.55 \\
+\hline
+\multicolumn{4}{l}{$^*$Servers + one IPv4 (single server) or + load balancer.} \\
+\multicolumn{4}{l}{1 $\mu$USD = 0.000001 USD.} \\
+\multicolumn{4}{l}{$^\dagger$Mean of 2 runs: one stepped test wrote no result file.} \\
+\end{tabular}
+\end{table}
